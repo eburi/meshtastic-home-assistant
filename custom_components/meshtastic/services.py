@@ -40,6 +40,9 @@ from .const import (
     ATTR_SERVICE_REQUEST_TELEMETRY_DATA_TYPE,
     ATTR_SERVICE_SEND_DIRECT_MESSAGE_DATA_MESSAGE,
     ATTR_SERVICE_SEND_TEXT_DATA_TEXT,
+    ATTR_SERVICE_SET_FIXED_POSITION_DATA_ALTITUDE,
+    ATTR_SERVICE_SET_FIXED_POSITION_DATA_LATITUDE,
+    ATTR_SERVICE_SET_FIXED_POSITION_DATA_LONGITUDE,
     DOMAIN,
     LOGGER,
     SERVICE_BROADCAST_CHANNEL_MESSAGE,
@@ -48,6 +51,7 @@ from .const import (
     SERVICE_REQUEST_TRACEROUTE,
     SERVICE_SEND_DIRECT_MESSAGE,
     SERVICE_SEND_TEXT,
+    SERVICE_SET_FIXED_POSITION,
     STATE_ATTRIBUTE_CHANNEL_INDEX,
     STATE_ATTRIBUTE_CHANNEL_NODE,
 )
@@ -96,6 +100,18 @@ SERVICE_REQUEST_TELEMETRY_SCHEMA = SERVICE_BASE_REQUEST_SCHEMA.extend(
 
 SERVICE_REQUEST_POSITION_SCHEMA = SERVICE_BASE_REQUEST_SCHEMA.extend({})
 SERVICE_REQUEST_TRACEROUTE_SCHEMA = SERVICE_BASE_REQUEST_SCHEMA.extend({})
+SERVICE_SET_FIXED_POSITION_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_SERVICE_DATA_FROM): cv.string,
+        vol.Required(ATTR_SERVICE_SET_FIXED_POSITION_DATA_LATITUDE): vol.All(
+            vol.Coerce(float), vol.Range(min=-90, max=90)
+        ),
+        vol.Required(ATTR_SERVICE_SET_FIXED_POSITION_DATA_LONGITUDE): vol.All(
+            vol.Coerce(float), vol.Range(min=-180, max=180)
+        ),
+        vol.Optional(ATTR_SERVICE_SET_FIXED_POSITION_DATA_ALTITUDE, default=0): vol.Coerce(float),
+    }
+)
 
 _SERVICE_CANT_HANDLE_RESPONSE = object()
 _service_handlers: dict[str, dict[str, Callable[[ServiceCall], Awaitable[ServiceResponse]]]] = defaultdict(dict)
@@ -107,6 +123,7 @@ SUPPORTED_SERVICES = {
     SERVICE_REQUEST_TELEMETRY: SupportsResponse.OPTIONAL,
     SERVICE_REQUEST_POSITION: SupportsResponse.OPTIONAL,
     SERVICE_REQUEST_TRACEROUTE: SupportsResponse.OPTIONAL,
+    SERVICE_SET_FIXED_POSITION: SupportsResponse.NONE,
 }
 
 SERVICE_TO_SCHEMA = {
@@ -116,6 +133,7 @@ SERVICE_TO_SCHEMA = {
     SERVICE_REQUEST_TELEMETRY: SERVICE_REQUEST_TELEMETRY_SCHEMA,
     SERVICE_REQUEST_POSITION: SERVICE_REQUEST_POSITION_SCHEMA,
     SERVICE_REQUEST_TRACEROUTE: SERVICE_REQUEST_TRACEROUTE_SCHEMA,
+    SERVICE_SET_FIXED_POSITION: SERVICE_SET_FIXED_POSITION_SCHEMA,
 }
 
 
@@ -163,6 +181,7 @@ async def async_register_gateway(hass: HomeAssistant, entry: MeshtasticConfigEnt
     await _setup_service_request_telemetry_handler(hass, entry, client)
     await _setup_service_request_position_handler(hass, entry, client)
     await _setup_service_request_traceroute_handler(hass, entry, client)
+    await _setup_service_set_fixed_position_handler(hass, entry, client)
 
 
 async def async_unregister_gateway(hass: HomeAssistant, entry: MeshtasticConfigEntry) -> None:
@@ -287,6 +306,44 @@ async def _setup_service_send_direct_message_handler(
         return None
 
     _service_handlers[entry.entry_id][SERVICE_SEND_DIRECT_MESSAGE] = handle_service_call
+
+
+async def _setup_service_set_fixed_position_handler(
+    hass: HomeAssistant, entry: MeshtasticConfigEntry, client: MeshtasticApiClient
+) -> None:
+    device_registry = dr.async_get(hass)
+    gateway_node = await client.async_get_own_node()
+
+    def _convert_device_id_to_node_id(device_id: str) -> int:
+        device = device_registry.async_get(device_id)
+        if device is None:
+            msg = f"No device found with id {device_id}"
+            raise ServiceValidationError(msg)
+
+        return next((int(i[1]) for i in device.identifiers if i[0] == DOMAIN), None)
+
+    async def handle_service_call(call: ServiceCall) -> ServiceResponse | object:
+        if ATTR_SERVICE_DATA_FROM in call.data:
+            from_id = call.data[ATTR_SERVICE_DATA_FROM]
+            if from_id.startswith("!"):
+                if gateway_node["user"]["id"] != from_id:
+                    return _SERVICE_CANT_HANDLE_RESPONSE
+            elif from_id.isnumeric():
+                if int(from_id) != gateway_node["num"]:
+                    return _SERVICE_CANT_HANDLE_RESPONSE
+            elif from_id.isalnum():
+                node_id = _convert_device_id_to_node_id(from_id)
+                if node_id != gateway_node["num"]:
+                    return _SERVICE_CANT_HANDLE_RESPONSE
+
+        await client.set_fixed_position(
+            latitude=call.data[ATTR_SERVICE_SET_FIXED_POSITION_DATA_LATITUDE],
+            longitude=call.data[ATTR_SERVICE_SET_FIXED_POSITION_DATA_LONGITUDE],
+            altitude=call.data[ATTR_SERVICE_SET_FIXED_POSITION_DATA_ALTITUDE],
+        )
+        return None
+
+    _service_handlers[entry.entry_id][SERVICE_SET_FIXED_POSITION] = handle_service_call
 
 
 async def _setup_service_broadcast_channel_message_handler(

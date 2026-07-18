@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from copy import deepcopy
 from datetime import timedelta
 from enum import StrEnum
@@ -31,7 +32,7 @@ from .aiomeshtastic import (
     TcpConnection as AioTcpConnection,
 )
 from .aiomeshtastic.errors import MeshRoutingError, MeshtasticError
-from .aiomeshtastic.protobuf import portnums_pb2
+from .aiomeshtastic.protobuf import admin_pb2, mesh_pb2, portnums_pb2
 from .const import (
     CONF_CONNECTION_BLUETOOTH_ADDRESS,
     CONF_CONNECTION_SERIAL_PORT,
@@ -372,6 +373,39 @@ class MeshtasticApiClient:
             return self._message_to_dict(response)
         except MeshtasticError as e:
             raise MeshtasticApiClientError(str(e)) from e
+
+    async def set_fixed_position(self, latitude: float, longitude: float, altitude: float = 0) -> Mapping[str, Any]:
+        latitude_i = round(latitude * 10**7)
+        longitude_i = round(longitude * 10**7)
+        altitude_m = round(altitude)
+
+        position = mesh_pb2.Position()
+        position.latitude_i = latitude_i
+        position.longitude_i = longitude_i
+        position.altitude = altitude_m
+        position.time = int(time.time())
+        position.location_source = mesh_pb2.Position.LocSource.LOC_MANUAL
+        position.altitude_source = mesh_pb2.Position.AltSource.ALT_MANUAL
+        position.precision_bits = 24
+
+        admin_message = admin_pb2.AdminMessage()
+        admin_message.set_fixed_position.CopyFrom(position)
+
+        try:
+            await self._interface.send_admin_message_await_response(
+                node=None, message=admin_message, expect_response=False
+            )
+        except MeshtasticError as e:
+            raise MeshtasticApiClientError(str(e)) from e
+
+        return {
+            "latitudeI": latitude_i,
+            "longitudeI": longitude_i,
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude": altitude_m,
+            "time": position.time,
+        }
 
     async def request_traceroute(self, node: int) -> Mapping[str, Any]:
         try:
