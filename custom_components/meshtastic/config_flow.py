@@ -482,10 +482,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_discovery_usb_confirm()
 
     async def async_step_discovery_usb_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        device_name = self._usb_discovery_info.manufacturer
-        if self._usb_discovery_info.description:
-            device_name += " " + self._usb_discovery_info.description
-        title = f"{device_name} ({self._usb_discovery_info.device})"
+        # Generic USB-serial bridges (e.g. CH340) report no manufacturer string
+        device_name = " ".join(
+            part for part in (self._usb_discovery_info.manufacturer, self._usb_discovery_info.description) if part
+        )
+        title = f"{device_name} ({self._usb_discovery_info.device})" if device_name else self._usb_discovery_info.device
         errors: dict[str, str] = {}
 
         self.context["title_placeholders"] = {
